@@ -180,7 +180,7 @@ tasks:
       - cargo run --release -p html-to-markdown-bench --features html-to-markdown-bench/compare-mdream -- run --mdream --output tools/benchmark-harness/results/latest-mdream.json
 
   diagnostic:paired:
-    desc: "Capture four pinned anchor/candidate benchmarks on one Linux runner"
+    desc: "Capture 406 records across seven checkpoints in forward/reverse order"
     platforms: [linux]
     vars:
       ARTIFACT_DIR: '{{.ARTIFACT_DIR | default "benchmark-calibration"}}'
@@ -191,6 +191,6 @@ tasks:
         --artifacts "{{.ARTIFACT_DIR}}" --workspace "{{.DIAGNOSTIC_DIR}}"
 
   diagnostic:test:
-    desc: "Prove paired benchmark record-count and identity checks reject invalid captures"
+    desc: "Prove benchmark record, campaign, provenance and identity checks reject invalid captures"
     cmds:
       - python3 scripts/benchmarks/paired_diagnostic.py --self-test

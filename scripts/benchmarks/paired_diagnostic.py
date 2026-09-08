@@ -1,6 +1,7 @@
-"""Capture a fixed ABBA benchmark diagnostic without changing calibration policy."""
+"""Capture 406 benchmark records across seven fixed checkpoints in forward/reverse order."""
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -13,9 +14,14 @@ import tomllib
 EXPECTED_FIXTURES = 29
 REVISIONS = {
     "anchor": "c87f68acde9af870d9a3a3fb169c8208e0a5654c",
+    "before_comments": "6e72d6f42b322d03958fdc716a046b45bfafc2b2",
+    "comments": "95496c949b88b37a14948949a8d674473750abca",
+    "before_parser": "65317bf0f55ba5123c1f75f005de6ac9cef464a8",
+    "parser": "049254f363373880bc1fe905682d2c8537800093",
+    "main": "eb0251696fe900f5a2b95704ecc139e049ec02e6",
     "candidate": "28c92d40441913a3cb2b1d0c8307c89fb13e872d",
 }
-ORDER = ("anchor", "candidate", "candidate", "anchor")
+ORDER = (*REVISIONS, *reversed(REVISIONS))
 FIXTURES = Path("tools/benchmark-harness/fixtures")
 
 
@@ -38,7 +44,8 @@ def self_test() -> None:
         except ValueError:
             continue
         raise RuntimeError("record-count or identity negative control did not fire")
-    print("Negative controls rejected 28 records and 29 duplicate identities", flush=True)
+    test_campaign()
+    print("Negative controls rejected invalid records, missing captures, changed provenance and wrong SHA", flush=True)
 
 
 def sha256(path: Path) -> str:
@@ -91,11 +98,12 @@ def prepare(repository: Path, workspace: Path, artifacts: Path) -> dict:
             "toolchain_sha256": sha256(source / "rust-toolchain.toml"),
             "fixtures": inventory(source),
         }
-    require(manifest["anchor"]["fixtures"] == manifest["candidate"]["fixtures"], "fixture corpus changed")
-    require(
-        manifest["anchor"]["toolchain_sha256"] == manifest["candidate"]["toolchain_sha256"],
-        "toolchain contract changed",
-    )
+    for name, metadata in manifest.items():
+        require(manifest["anchor"]["fixtures"] == metadata["fixtures"], f"fixture corpus changed: {name}")
+        require(
+            manifest["anchor"]["toolchain_sha256"] == metadata["toolchain_sha256"],
+            f"toolchain contract changed: {name}",
+        )
     (artifacts / "binary-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
 
@@ -123,22 +131,64 @@ def capture(workspace: Path, artifacts: Path, manifest: dict) -> list[dict]:
     return captures
 
 
-def summarize(captures: list[dict], artifacts: Path) -> None:
+def validate_campaign(captures: list[dict]) -> int:
     expected_records = EXPECTED_FIXTURES * len(ORDER)
     actual_records = sum(len(data["runs"]) for data in captures)
     require(len(captures) == len(ORDER) and actual_records == expected_records, "campaign count mismatch")
     first = captures[0]
-    for data in captures[1:]:
+    for name, data in zip(ORDER, captures, strict=True):
+        validate_count(data["runs"])
+        require(data["schema"] == 2 and data["sha"] == REVISIONS[name], "capture provenance mismatch")
         require(data["provenance"] == first["provenance"], "measurement provenance changed")
         require(data["hostname"] == first["hostname"], "measurement host changed")
+    return actual_records
+
+
+def test_campaign() -> None:
+    captures = [
+        {
+            "schema": 2,
+            "sha": REVISIONS[name],
+            "hostname": "test-host",
+            "provenance": {"profile": "release"},
+            "runs": [{"fixture": str(index)} for index in range(EXPECTED_FIXTURES)],
+        }
+        for name in ORDER
+    ]
+    require(validate_campaign(captures) == 406, "positive campaign control failed")
+    changed_provenance = copy.deepcopy(captures)
+    changed_provenance[-1]["provenance"]["profile"] = "debug"
+    wrong_sha = copy.deepcopy(captures)
+    wrong_sha[-1]["sha"] = REVISIONS["candidate"]
+    cases = (
+        (captures[:-1], "campaign count mismatch"),
+        (changed_provenance, "measurement provenance changed"),
+        (wrong_sha, "capture provenance mismatch"),
+    )
+    for invalid, expected_error in cases:
+        try:
+            validate_campaign(invalid)
+        except ValueError as error:
+            require(str(error) == expected_error, f"negative control failed for wrong reason: {error}")
+            continue
+        raise RuntimeError(f"campaign negative control did not fire: {expected_error}")
+
+
+def summarize(captures: list[dict], artifacts: Path) -> None:
+    actual_records = validate_campaign(captures)
     outputs = {}
     for data in captures:
         for row in data["runs"]:
             outputs.setdefault(row["fixture"], []).append(row["output_bytes"])
     for fixture, values in outputs.items():
-        require(values[0] == values[3] and values[1] == values[2], f"unstable output size: {fixture}")
+        require(values == list(reversed(values)), f"unstable output size: {fixture}")
     differences = {fixture: values for fixture, values in outputs.items() if len(set(values)) > 1}
-    summary = {"expected_records": expected_records, "actual_records": actual_records, "output_bytes": differences}
+    summary = {
+        "capture_order": ORDER,
+        "expected_records": EXPECTED_FIXTURES * len(ORDER),
+        "actual_records": actual_records,
+        "output_bytes": differences,
+    }
     (artifacts / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
 

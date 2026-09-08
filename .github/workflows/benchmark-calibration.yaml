@@ -15,7 +15,7 @@ env:
 
 jobs:
   collect:
-    name: "Benchmark: Diagnose pinned revisions"
+    name: "Benchmark: Diagnose seven checkpoints (406 records)"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -32,7 +32,7 @@ jobs:
       - name: Install Task
         uses: xberg-io/actions/install-task@fc21dc868b7ec7f2b29a75c16312a818f7feb6f6 # ~keep v1
 
-      - name: Capture pinned ABBA diagnostic
+      - name: Capture seven checkpoints in forward/reverse order
         run: task bench:diagnostic:paired
         shell: bash
 
