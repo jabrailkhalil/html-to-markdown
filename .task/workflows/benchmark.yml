@@ -194,3 +194,14 @@ tasks:
     desc: "Prove benchmark record, campaign, provenance and identity checks reject invalid captures"
     cmds:
       - python3 scripts/benchmarks/paired_diagnostic.py --self-test
+
+  diagnostic:profile:
+    desc: "Profile two Linux fixtures at immutable SOURCE_SHA with release symbols"
+    platforms: [linux]
+    cmds:
+      - python3 scripts/benchmarks/profile_diagnostic.py
+
+  diagnostic:profile:test:
+    desc: "Validate profile capture identity and output negative controls"
+    cmds:
+      - python3 scripts/benchmarks/profile_diagnostic.py --self-test

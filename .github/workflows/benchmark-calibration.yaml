@@ -3,6 +3,10 @@ name: Benchmark Calibration
 on:
   workflow_dispatch:
     inputs:
+      profile_only:
+        description: "Capture Linux function profiles instead of ABBA comparison"
+        type: boolean
+        default: false
       base_sha:
         description: "Full commit SHA before optimization"
         required: true
@@ -25,6 +29,7 @@ env:
 
 jobs:
   collect:
+    if: ${{ !inputs.profile_only }}
     name: "Benchmark: Compare optimization (116 records)"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -57,3 +62,32 @@ jobs:
           path: benchmark-calibration/
           if-no-files-found: error
           retention-days: 30
+
+  profile:
+    if: ${{ inputs.profile_only }}
+    name: "Benchmark: Linux function profiles (2 fixtures)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout diagnostic driver
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # ~keep v6
+        with:
+          fetch-depth: 0
+      - name: Setup Rust
+        uses: xberg-io/actions/setup-rust@fc21dc868b7ec7f2b29a75c16312a818f7feb6f6 # ~keep v1
+        with:
+          cache-key-prefix: benchmark-profile-diagnostic
+      - name: Install Task
+        uses: xberg-io/actions/install-task@fc21dc868b7ec7f2b29a75c16312a818f7feb6f6 # ~keep v1
+      - name: Capture symbolized profiles
+        env:
+          SOURCE_SHA: ${{ inputs.candidate_sha }}
+        run: task bench:diagnostic:profile
+      - name: Upload profiles and provenance
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ~keep v7
+        with:
+          name: benchmark-profile-${{ github.run_id }}
+          path: benchmark-profile/
+          if-no-files-found: error
+          retention-days: 14
