@@ -180,7 +180,7 @@ tasks:
       - cargo run --release -p html-to-markdown-bench --features html-to-markdown-bench/compare-mdream -- run --mdream --output tools/benchmark-harness/results/latest-mdream.json
 
   diagnostic:paired:
-    desc: "Capture 406 records across seven checkpoints in forward/reverse order"
+    desc: "Capture 116 records for BASE_SHA and CANDIDATE_SHA in ABBA order"
     platforms: [linux]
     vars:
       ARTIFACT_DIR: '{{.ARTIFACT_DIR | default "benchmark-calibration"}}'

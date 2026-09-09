@@ -1,10 +1,11 @@
-"""Capture 406 benchmark records across seven fixed checkpoints in forward/reverse order."""
+"""Capture 116 benchmark records for two immutable revisions in ABBA order."""
 
 import argparse
 import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,16 +13,7 @@ from pathlib import Path
 import tomllib
 
 EXPECTED_FIXTURES = 29
-REVISIONS = {
-    "anchor": "c87f68acde9af870d9a3a3fb169c8208e0a5654c",
-    "before_comments": "6e72d6f42b322d03958fdc716a046b45bfafc2b2",
-    "comments": "95496c949b88b37a14948949a8d674473750abca",
-    "before_parser": "65317bf0f55ba5123c1f75f005de6ac9cef464a8",
-    "parser": "049254f363373880bc1fe905682d2c8537800093",
-    "main": "eb0251696fe900f5a2b95704ecc139e049ec02e6",
-    "candidate": "28c92d40441913a3cb2b1d0c8307c89fb13e872d",
-}
-ORDER = (*REVISIONS, *reversed(REVISIONS))
+ORDER = ("anchor", "candidate", "candidate", "anchor")
 FIXTURES = Path("tools/benchmark-harness/fixtures")
 
 
@@ -72,11 +64,12 @@ def inventory(source: Path) -> dict:
     }
 
 
-def prepare(repository: Path, workspace: Path, artifacts: Path) -> dict:
+def prepare(repository: Path, workspace: Path, artifacts: Path, revisions: dict) -> dict:
     manifest = {}
-    for name, revision in REVISIONS.items():
+    for name, revision in revisions.items():
         source = workspace / name
         log = artifacts / f"{name}-build.log"
+        command(["git", "fetch", "origin", revision], repository, log)
         command(["git", "worktree", "add", "--detach", str(source), revision], repository, log)
         command(["rustc", "-Vv"], source, log)
         command(["cargo", "-V"], source, log)
@@ -108,7 +101,7 @@ def prepare(repository: Path, workspace: Path, artifacts: Path) -> dict:
     return manifest
 
 
-def capture(workspace: Path, artifacts: Path, manifest: dict) -> list[dict]:
+def capture(workspace: Path, artifacts: Path, manifest: dict, revisions: dict) -> list[dict]:
     captures = []
     for index, name in enumerate(ORDER, 1):
         binary = workspace / f"htmbench-{name}"
@@ -122,7 +115,7 @@ def capture(workspace: Path, artifacts: Path, manifest: dict) -> list[dict]:
         )
         data = json.loads(output.read_text())
         validate_count(data["runs"])
-        require(data["schema"] == 2 and data["sha"] == REVISIONS[name], "capture provenance mismatch")
+        require(data["schema"] == 2 and data["sha"] == revisions[name], "capture provenance mismatch")
         for row in data["runs"]:
             expected = manifest[name]["fixtures"][row["fixture"]]
             require(row["group"] == expected["group"] and row["bytes"] == expected["bytes"], "input mismatch")
@@ -131,35 +124,38 @@ def capture(workspace: Path, artifacts: Path, manifest: dict) -> list[dict]:
     return captures
 
 
-def validate_campaign(captures: list[dict]) -> int:
+def validate_campaign(captures: list[dict], revisions: dict) -> int:
     expected_records = EXPECTED_FIXTURES * len(ORDER)
     actual_records = sum(len(data["runs"]) for data in captures)
     require(len(captures) == len(ORDER) and actual_records == expected_records, "campaign count mismatch")
     first = captures[0]
     for name, data in zip(ORDER, captures, strict=True):
         validate_count(data["runs"])
-        require(data["schema"] == 2 and data["sha"] == REVISIONS[name], "capture provenance mismatch")
+        require(data["schema"] == 2 and data["sha"] == revisions[name], "capture provenance mismatch")
         require(data["provenance"] == first["provenance"], "measurement provenance changed")
         require(data["hostname"] == first["hostname"], "measurement host changed")
     return actual_records
 
 
 def test_campaign() -> None:
+    revisions = {"anchor": "a" * 40, "candidate": "b" * 40}
     captures = [
         {
             "schema": 2,
-            "sha": REVISIONS[name],
+            "sha": revisions[name],
             "hostname": "test-host",
             "provenance": {"profile": "release"},
             "runs": [{"fixture": str(index)} for index in range(EXPECTED_FIXTURES)],
         }
         for name in ORDER
     ]
-    require(validate_campaign(captures) == 406, "positive campaign control failed")
+    require(
+        validate_campaign(captures, revisions) == EXPECTED_FIXTURES * len(ORDER), "positive campaign control failed"
+    )
     changed_provenance = copy.deepcopy(captures)
     changed_provenance[-1]["provenance"]["profile"] = "debug"
     wrong_sha = copy.deepcopy(captures)
-    wrong_sha[-1]["sha"] = REVISIONS["candidate"]
+    wrong_sha[-1]["sha"] = revisions["candidate"]
     cases = (
         (captures[:-1], "campaign count mismatch"),
         (changed_provenance, "measurement provenance changed"),
@@ -167,15 +163,15 @@ def test_campaign() -> None:
     )
     for invalid, expected_error in cases:
         try:
-            validate_campaign(invalid)
+            validate_campaign(invalid, revisions)
         except ValueError as error:
             require(str(error) == expected_error, f"negative control failed for wrong reason: {error}")
             continue
         raise RuntimeError(f"campaign negative control did not fire: {expected_error}")
 
 
-def summarize(captures: list[dict], artifacts: Path) -> None:
-    actual_records = validate_campaign(captures)
+def summarize(captures: list[dict], artifacts: Path, revisions: dict) -> None:
+    actual_records = validate_campaign(captures, revisions)
     outputs = {}
     for data in captures:
         for row in data["runs"]:
@@ -193,9 +189,33 @@ def summarize(captures: list[dict], artifacts: Path) -> None:
     print(json.dumps(summary), flush=True)
 
 
+def compare_guardrails(workspace: Path, artifacts: Path) -> None:
+    results = {}
+    for index, name in enumerate(ORDER, 1):
+        arguments = [
+            str(workspace / "htmbench-candidate"),
+            "compare",
+            "--results",
+            str(artifacts / f"{index}-{name}.json"),
+            "--baseline",
+            str(workspace / "anchor/tools/benchmark-harness/baselines/baseline.json"),
+            "--guardrails",
+            str(workspace / "anchor/tools/benchmark-harness/guardrails.json"),
+        ]
+        with (artifacts / f"{index}-{name}-guardrails.log").open("w") as output:
+            result = subprocess.run(
+                arguments, cwd=workspace / "candidate", stdout=output, stderr=subprocess.STDOUT, check=False
+            )
+        results[f"{index}-{name}"] = {"exit_code": result.returncode, "passed": result.returncode == 0}
+    (artifacts / "guardrail-results.json").write_text(json.dumps(results, indent=2) + "\n")
+    print(f"Strict existing guardrail results: {json.dumps(results)}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--base-sha", default=os.environ.get("BASE_SHA"))
+    parser.add_argument("--candidate-sha", default=os.environ.get("CANDIDATE_SHA"))
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--workspace", type=Path)
     arguments = parser.parse_args()
@@ -203,6 +223,10 @@ def main() -> None:
     if arguments.self_test:
         return
     require(arguments.artifacts is not None and arguments.workspace is not None, "both directories are required")
+    revisions = {"anchor": arguments.base_sha, "candidate": arguments.candidate_sha}
+    for name, revision in revisions.items():
+        require(isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision), f"invalid full SHA: {name}")
+    require(revisions["anchor"] != revisions["candidate"], "revisions must differ")
     artifacts = arguments.artifacts.resolve()
     workspace = arguments.workspace.resolve()
     require(not artifacts.exists() and not workspace.exists(), "diagnostic directories must be new")
@@ -210,8 +234,9 @@ def main() -> None:
     workspace.mkdir(parents=True)
     command(["uname", "-a"], Path.cwd(), artifacts / "host.log")
     command(["lscpu"], Path.cwd(), artifacts / "host.log")
-    manifest = prepare(Path.cwd(), workspace, artifacts)
-    summarize(capture(workspace, artifacts, manifest), artifacts)
+    manifest = prepare(Path.cwd(), workspace, artifacts, revisions)
+    summarize(capture(workspace, artifacts, manifest, revisions), artifacts, revisions)
+    compare_guardrails(workspace, artifacts)
 
 
 if __name__ == "__main__":

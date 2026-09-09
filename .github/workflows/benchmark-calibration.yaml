@@ -1,7 +1,17 @@
 name: Benchmark Calibration
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "Full commit SHA before optimization"
+        required: true
+        type: string
+        default: "1a5306c467501159b2e58642722c99fbf65323c3"
+      candidate_sha:
+        description: "Full commit SHA after optimization"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,7 +25,7 @@ env:
 
 jobs:
   collect:
-    name: "Benchmark: Diagnose seven checkpoints (406 records)"
+    name: "Benchmark: Compare optimization (116 records)"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -32,7 +42,10 @@ jobs:
       - name: Install Task
         uses: xberg-io/actions/install-task@fc21dc868b7ec7f2b29a75c16312a818f7feb6f6 # ~keep v1
 
-      - name: Capture seven checkpoints in forward/reverse order
+      - name: Capture before/after optimization in ABBA order
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: task bench:diagnostic:paired
         shell: bash
 
